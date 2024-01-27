@@ -1,0 +1,2219 @@
+Fault-Tolerant Containers Using NiLiCon
+Diyu Zhou
+ComputerScienceDepartment,UCLA
+zhoudiyu@cs.ucla.edu
+Yuval Tamir
+ComputerScienceDepartment,UCLA
+tamir@cs.ucla.edu
+Abstract
+—Manyservicesdeployed in the cloud require
+high reliability and must thus survive machine failures. Pro-
+vidingsuchfault tolerancetransparently, without requiring
+applicationmodiﬁcations,has motivated extensive research on
+replicating virtual machines (VMs). Cloud computing typically
+relies on VMs or containers to provide an isolation and
+
+multitenancylayer. Containers have advantages over VMs in
+smallersize,faster startup,and avoiding the need to manage
+updatesof multiple VMs. This paper reports on the design,
+
+implementation,and evaluation of
+NiLiCon
+— a transparent
+containerreplication mechanism for fault tolerance. To the
+best of our knowledge,
+NiLiCon
+is the ﬁrst implementation of
+containerreplication, demonstrating that it can be used for
+transparent deploymentof critical services in the cloud.
+NiLiCon
+is based on high-frequency asynchronous incremen-
+tal checkpointingto a warm spare, as previously used for
+VMs.The challengeto accomplishing this is that, compared
+
+to VMs, there is much tighter coupling between the container
+state and the state of the underlying platform.
+NiLiCon
+meets
+this challenge,eliminatingthe needto deploy services in VMs,
+
+with performanceoverheads that are competitive with those of
+similarVM replication mechanisms. Speciﬁcally, with the seven
+benchmarksusedin the evaluation, the performance overhead
+
+of
+NiLiCon
+is in the range of 19%-67%. For fail-stop faults,
+the recovery rate is 100%.
+Keywords
+-fault tolerance;replication;
+I. I
+NTRODUCTION
+Servers commonly host applications in virtual machines
+(VMs)and/or containersto facilitate efﬁcient, ﬂexible re-
+
+sourcemanagement[19], [30],[35]. In some environments
+
+containersand VMsareused together. However, in others
+containersalonehave become the preferred choice since
+
+their storageand deploymentconsumefewer resources,
+
+allowing for greater agilityandelasticity [19], [27].
+Many of the applications and services hosted by dat-
+acentersrequire highavailability and/or high reliability.
+
+Meetingtheseneeds can be left to the application developers
+who can develop fully customized solutions or adapt their
+
+applicationsto be compatible with more general-purpose
+
+middleware. However, there are obvious beneﬁts to avoid-
+ingthisextraburdenondevelopersandsupportlegacy
+
+software withoutrequiring extensive modiﬁcations. This
+has motivated the development of application-transparent
+
+mechanismsfor high reliability.
+The above considerations have led to the development of
+a plethora of techniques and products for tolerating VM
+failures using replication [21], [23], [24], [29], [36], [37].
+Most of these techniques involve a primary VM and a ”warm
+
+backup”(standbyspare)VM [23], [36]. The applications
+run in the primary, which is periodically paused so that
+
+its statecanbe checkpointed to the backup. If the primary
+
+fails, the applications or services are started on the backup
+
+from the checkpointedstate.In order for this failover to
+be transparent to the environment outside the VM (e.g., the
+
+serviceclients), thesefault tolerance mechanisms ensure that
+the backupresumesfrom a state that is consistent with the
+
+ﬁnal primarystate visibleto the clients.
+Despite theadvantagesof containers, there has been very
+littlework on high availability and fault tolerance techniques
+
+forcontainers [26]. In particular, there has been limited work
+
+on high availability techniques [27], [28]. However, to the
+
+best of our knowledge, there are are no prior works that re-
+
+port on application-transparent, client-transparent, container-
+
+based fault tolerance mechanisms that support stateful ap-
+
+plications.
+NiLiCon
+(Nine Lives Containers), as described in
+thispaper, is such a mechanism.
+The VM-level fault tolerance techniques discussed above
+do support stateful applications and provide application
+
+transparency as well as client transparency. Hence,
+NiLiCon
+uses the samebasicapproach[23]. Sincecontainer state
+
+does not includethe entire kernel, the size of the periodic
+
+checkpointscan be expected to be smaller, potentially result-
+
+ing in lower overhead when the technique is applied at the
+
+containerlevel. On the other hand, there is a much tighter
+
+coupling betweena container and the underlying kernel than
+
+betweenaVMandtheunderlyinghypervisor.Inparticular,
+
+there is much more container state in the kernel (e.g., the list
+
+of open ﬁle descriptors of the applications in the container)
+thanthereisVMstateinthehypervisor.Thus,implementing
+thewarm backup replication scheme with containers is a
+
+more challengingtask.
+NiLiCon
+is an existence proof that
+thischallengecanbe met.
+Thestarting point of
+NiLiCon
+’s implementation is based
+on a tool called CRIU (Checkpoint/Restore in User
+
+Space) [3],whichis able to checkpoint a container under
+
+Linux. However, the existing implementation of CRIU and
+
+thekernel interface provided by Linux kernel incur high
+
+overhead for some of CRIU’s operations. For example,
+
+our measurementsshow that collecting container namespace
+
+information maytake up to 100ms. Hence, using the un-
+
+]ı
+(}„
+’ıı˚
+o˚’˚
+}µı›µı
+ı]v˚„
+uµ’}„
+˚µı˚
+Y
+Y
+}›
+
+’ıı˚ }›Ç
+˚µı˚
+}›
+
+’ıı˚ }›Ç
+Figure1. Workﬂow of Remus and
+NiLiCon
+on the primary host.
+modiﬁed CRIU and Linux,it is not feasible to support the
+short checkpointing intervals(tens of milliseconds) required
+
+for client-server applications. An important contribution of
+
+ourworkistheidentiﬁcationandmitigationofallmajor
+
+performancebottlenecksin the current implementation of
+
+containercheckpointing withCRIU.
+The implementation of
+NiLiCon
+has involved signiﬁcant
+modiﬁcationsto CRIU and a few small kernel changes.
+
+We have validated the operation of
+NiLiCon
+and evaluated
+its overhead using seven benchmarks, ﬁve of which are
+server applications. For fail-stop faults, the recovery rate
+
+with
+NiLiCon
+was 100%. The performance overhead was in
+the range of 19%-67%. During normal operation, the CPU
+
+utilizationon the backup was in the range of 6.8%-40%.
+We make the following contributions: 1) Demonstrate
+a working implementation of the ﬁrst container repli-
+
+cation mechanisms that is client-transparent, application-
+
+transparent,andsupports stateful applications;2) Identify
+the majorperformance bottlenecksin the current CRIU
+
+containercheckpointimplementationand theLinux kernel
+
+interface and propose mechanismsto resolve them.
+Section II presents Remus [23] and CRIU [3], which
+are the bases for
+NiLiCon
+. The key differences between
+NiLiCon
+and Remus areexplained in
+§
+III.The design and
+operationof
+NiLiCon
+are discussed in
+§
+IV. Key implemen-
+tation optimizations are presentedin
+§
+V. The experimental
+setup and evaluation results are presented in
+§
+VI and
+§
+VII,
+respectively. Related work is discussed in
+§
+VIII.
+II. B
+ACKGROUND
+NiLiCon
+is built on Remus [23] and CRIU [3]. Algorith-
+mically,
+NiLiCon
+operates on containers in the same way that
+Remus operates on VMs, as described in
+§
+II-A.A key part of
+this technique is the mechanism used to periodically check-
+
+point the primarystate to the backup. CRIU, as described
+
+in
+§
+II-B, is the starting point for
+NiLiCon
+’s checkpointing
+mechanism.
+A. Remus: Passive VM Replication
+With Remus [23], there is a primary VM that executes
+the applications anda backup VM that receives periodic
+
+checkpointsso that it can take over execution if the primary
+
+fails. As shown in Figure 1, processing on the primary
+
+consists of a sequence of epochs (intervals). Once per epoch,
+
+the VM is paused and changes in the VM state (incremental
+
+checkpoints)since the lastepoch are copied to a staging
+
+buffer (
+Localstate copy
+in Figure 1). The primary VM then
+resumes execution while the content of the staging buffer
+is concurrently transferred to the backup VM (
+Send state
+).
+In order to identify the changes in VM state since the last
+
+state transfer, during the
+Pause
+interval of each epoch all
+the pageswithin the VM are set to be read-only. Thus, an
+
+exception is generated the ﬁrst time that a page is modiﬁed
+
+inanepoch,allowingthehypervisortotrackmodiﬁedpages.
+A key issue addressed by Remus is the handling of the
+output of the primary VM to the external world. There
+
+are two key destinations of output from the VM: network
+and disk.For the network, incoming packets are processed
+
+normally. However, outgoing packets generated during the
+
+Execute
+phase arebuffered. The outgoing packets buffered
+during an epoch,
+k
+,arereleased(
+Releaseoutput
+) during
+epoch
+k
++1
+, once the backup VM acknowledges the receipt
+of the primary VM’s state changes produced during epoch
+k
+. The delay (buffering) of outputs is needed to ensure that,
+uponfailover, the state of the backup is consistent with the
+
+most recentoutputs observable by the external world. Due
+
+to this delay, in order to support client-server applications,
+
+the checkpointinginterval is short — tens of milliseconds.
+Remus handles disk outputas changes to internal state.
+Speciﬁcally, the primary and backup VMs have separate
+
+disks, whose content areinitially identical. Duringeach
+
+epoch,readsfromthedisk are processednormally. Writes
+
+to the disk are directly applied to the primary VM’s disk and
+
+asynchronouslytransmitted to the backup VM. The backup
+
+VM buffers the disk writes in memory. Disk writes from an
+
+epoch,
+k
+, are written to the backup disk during epoch
+k
++1
+,
+after the backupreceives all the state changes performed by
+
+the primary VM during epoch
+k
+.
+B. CRIU: Container Live Migration Mechanism
+CRIU (Checkpoint/RestoreIn Userspace) [3] is a tool that
+can checkpointandrestore complicated real-worldcontainer
+
+state on Linux. CRIU can be used to perform live migration
+
+of a container. This involves obtaining the container state
+
+(checkpointing)on one host and restoring it on another.
+
+Thisrequires migratingthe user-level memory and register
+
+state of the container. Additionally, due to the tight coupling
+
+betweenthe containerand the underlyingoperating system,
+
+thereis critical container state, such as opened ﬁle descrip-
+
+tors and sockets, withinthe kernel that must be migrated. For
+
+checkpointingand restoring in-kernel container state, CRIU
+
+relieson kernel interfaces, such as the
+proc
+and
+sys
+ﬁle
+systems, as well as system calls, such as
+ptrace
+,
+getsockopt
+,
+and
+setsockopt
+. This requires CRIU to run as a privileged
+process withinthe root namespace.
+In order to obtain a consistent state, CRIU ensures that the
+containerstatedoes notchangeduringcheckpointing.This
+
+is done utilizing the kernel’s
+freezer
+feature that sends virtual
+signals to all the threads in the container, forcing them to
+
+pause. Threads executing user-level code pause immediately.
+For threads executing system calls, the virtual signal forces
+
+a return from the system calls, as if they are interrupted by
+a normal signal. Some container state, such as TCP socket
+state, can continueto be changed by the underlying kernel
+
+and receive special handling (
+§
+III).
+Without signiﬁcant kernel modiﬁcations or prohibitive
+overhead, parts of container state can only be obtained from
+
+within the processes being checkpointed.Thisincludes the
+
+timers, signal mask, and memory contents.Hence,CRIU
+
+maps (injects) a code segment (
+parasite code
+) into each
+of the processes being checkpointed (using
+ptrace
+). The
+parasite codecommunicates withthe CRIUprocessviapipes
+
+and processes requests, suchas to obtain the signal mask.
+CRIU can migrateestablished TCP connections usinga
+socket
+repair mode
+supported by the Linux kernel [16].
+When a process places a socket in
+repair mode
+, it can get/set
+critical state that cannot be otherwise accessed. This includes
+
+sequence numbers, acknowledgmentnumbers, packets in the
+
+write queue(transmitted but not acknowledged), and packets
+
+in the read queue (received but not read by the process).
+CRIU supportsincremental checkpointingof the user-
+space memory state.It identiﬁes the memory pages modiﬁed
+since the last checkpointusinga kernel feature called
+
+soft-dirtypages [14].A process writes to a special ﬁle
+
+(
+/proc/pid/clear
+refs
+) to cause the kernel to start the tracking
+of modiﬁed pages and reads from another ﬁle (
+/proc/pid/-
+pagemap
+) to identify the pages modiﬁed since the beginning
+of the tracking.
+III.
+NiLiCon
+VS
+R
+EMUS
+This section presentsthekey differences between
+NiLiCon
+and Remus. Thesedifferences are due to the fact that, unlike
+
+VMswithrespect tothehypervisor,asigniﬁcantpartof
+the container state is in the kernel. This in-kernel state is
+
+a combination of processes state: ﬁle descriptors, virtual
+
+memoryarea(VMA), sockets, signals, process trees; and
+
+containerstate: control groups,namespaces, mount points,
+and ﬁle system caches.For checkpointing and restoring most
+of these state components,
+NiLiCon
+relies on existing CRIU
+code (
+§
+II-B).
+NiLiCon
+does not rely on CRIU code for handling ﬁle
+system caching.CRIU expects the container to use a NAS
+(network attached storage),accessiblefrom the original con-
+
+tainer host and thehost on which the container checkpoint
+
+is restored. CRIU ﬂushes the ﬁle system cache to the NAS
+
+after the checkpointcompletes, thus committing that part
+of the state. With
+NiLiCon
+, ﬂushing the ﬁle system cache
+at every epoch (tens of milliseconds) is not practical since,
+
+for disk-intensive applications, it may introduce prohibitive
+
+overhead of up to hundreds of milliseconds per epoch.
+NiLiCon
+includeskernel changes to efﬁciently deal with
+ﬁle system caching. Thesechangesadd a new state that is
+
+maintained for pagesin the page cache and inode cache
+
+entries: “Dirty but Not Checkpointed” (
+DNC
+). For check-
+pointing, a new system call,
+fgetfc
+,obtainsallthe
+DNC
+À}˚’’˚’
+ı˚
+ı}(]o˚
+’Ç’ ı˚u’
+Ç’ı˚
+] o µ„˚
+˚ı}„
+ıÁ
+ıo
+o˚
+˚vı
+ı’
+
+˚vı
+ı]v˚„
+ı ı˚
+ıÁ}„l
+}µı›µı
+ıÁ}„l
+(˚„]vP
+ıÁ}„l
+
+]v›µı
+(˚o˚’˚
+ıÁ„((]
+P ]’ı˚„l˚u}„Çıı˚
+
+]ı˚’
+˚˚]À
+
+„]ı˚’
+Ç’ı˚ıı˚
+vr l˚„v˚o }vı]v˚„ ıı˚
+ı]v˚„
+„v˚o
+„v˚o
+ıÁ
+Figure2. The architecture of
+NiLiCon
+.
+inodeand page cacheentries andclears the
+DNC
+state. For
+restoringa ﬁle system cache checkpoint, existing system
+
+calls are used,such as
+chown
+for theinode cacheand
+pwrite
+for the page cache.
+NiLiCon
+andRemus handle the backupdifferently. Remus
+maintains a ready-to-go backup VM — it commits state
+
+changes directlyto the backup VM during each epoch. Thus,
+
+if the primary VM fails, Remus can resume the backup VM
+
+with minimaldelay. With
+NiLiCon
+, maintaining a ready-to-
+go backup container is impractical. This is due to the latency
+
+of the large number of system calls that must be invoked in
+
+order to apply the in-kernel container state changes to the
+
+kernel — potentially adding up to hundreds of milliseconds.
+
+Hence,at the backup,
+NiLiCon
+maintains all the in-kernel
+containerstate in buffers, applying this state to the kernel
+
+onlyupona failover.
+Both
+NiLiCon
+and Remus pausethe primarywhile state
+changes aresaved in order to prevent inconsistent state
+
+changes. With Remus, once a VM is paused, its state can no
+
+longerbe affected by packets incoming from the network.
+
+However, with
+NiLiCon
+, pausing the primary is insufﬁcient
+since incomingpackets can modify the primarystate while
+
+the primary is paused. Thus,
+NiLiCon
+blocks incoming
+packets at the primary during checkpointing. With
+NiLiCon
+,
+incoming packetsare also blocked during recovery at the
+
+backup. During recovery, the network namespace must be
+
+restoredbeforerestoring the sockets. If incoming packets
+
+are not blocked, an incoming TCP packet arriving after the
+network namespaceis restored but before the relevant socket
+is restored would cause the kernel to send an RST (reset)
+
+packet to the client, breaking the connection.
+IV.
+NiLiCon
+B
+ASICS
+This sectionpresents the basic designandoperationof
+NiLiCon
+, without the optimizations described in
+§
+V. The
+overall architecture of
+NiLiCon
+is shown in Figure 2. The
+core componentsare theprimary and backupagents, that
+
+coordinate withthe rest of the components and also perform
+
+the maintask of checkpointing/restoring the container state.
+
+While
+NiLiCon
+is focused on error recovery, an error
+detection mechanismis needed to initiate the recovery. As
+with most VM replication works [21], [23], [24], [29],
+
+[37], we assume a fail-stop fault model.
+NiLiCon
+includes
+a simple error detector that sends a heart beat from the
+
+primaryagent to the backup agent every 30ms, as long
+
+as there is an increase in the CPU cycles usage of the
+
+container. The detector obtains the CPU cycles usage from
+the
+cpuacct.usage
+ﬁle of the container’s control group. To
+prevent false alarms when the container is idle, the container
+
+includes a simple keep-alive process that wakes up every
+
+30ms and executes 1000 instructions. If the backup agent
+
+fails to receive the heart beat in three consecutive 30ms
+
+intervals, recovery is initiated.
+As with Remus, execution on the primary consists of a
+sequence of epochs (Figure 1). With the implementation of
+
+NiLiCon
+used in this paper, the duration of the execution
+phase of each epoch is 30ms.
+NiLiCon
+uses the CRIUcode
+to checkpoint/restore the container state. After the execution
+
+phase of an epoch completes, the primary agent forks a
+
+CRIU process to take an incremental checkpoint (
+§
+II-B)and
+send it to the backup agent. When recovery is initiated, the
+
+backup agent forksa CRIU process to restore the container.
+Most of
+NiLiCon
+’s code for handling network and disk I/O
+is from the Remus implementation in Xen (RemusXen) [12].
+
+For network I/O, the implementation is unchanged. The
+
+buffering and releasing is performed using the
+sch
+plug
+kernel module in the mainstream kernel. For disk I/O,
+
+RemusXenusesa modiﬁed version of the DRBD module [6]
+
+(a distributed software RAID implementation), as described
+
+in
+§
+II-A. We ported the RemusXen DRBD modiﬁcations
+to the latest version of DRBD, which is currently in the
+mainstreamkernel.
+During each epoch’s execution phase, network output
+is buffered (
+§
+II-A). File systemupdates are tracked using
+the DNC state for pageand inodecache entries (
+§
+III).
+Disk writes are sent asynchronously to the backup by the
+
+primary’s DRBD module. The backup’s DRBD module
+receives and buffers disk writes in memory. When the
+primary’s execution phase completes, the primary agent
+
+stops the containerusing virtual signals(
+§
+II-B)and directs
+the network buffering module to block network input. The
+
+primaryagent also directs the DRBD moduleto send to
+the backup a “barrier” to mark the end of this epoch’s disk
+writes. The primaryagent obtainstheregister and memory
+
+state fromthe parasite code (
+§
+II-B),as well as in-kernel
+containerstate, including the ﬁle systemcache,fromthe
+
+kernel. The primary agent sends this state to the backup
+
+agent. The backupagent receives and buffers the state in
+
+memory. The primary agent then unblocks the network input
+
+and resumes thecontainerto execute another epoch. Once
+
+the backup agenthas received both the disk writes and
+
+containerstate, it sends an acknowledgment to the primary
+
+agent, which then releases the buffered outgoing packets.
+The backup then commitsall the buffered disk, register and
+memorystate, thus completing onecheckpoint iteration.
+If the backup agent detects a failure, recovery is initiated.
+The backup agentdiscards any uncommitted state and uses
+
+the committedstateto create image ﬁles in a format that
+
+CRIUexpects. It then forks a CRIU process to restore the
+
+containerstate. Thecontainer network namespaceconnects
+to the external network via a virtual bridge. During recovery,
+the backupagent disconnectsthecontainer network names-
+
+pace from the virtual bridge, thusblocking networkinput
+
+(
+§
+III).Afterthe containerhas been restored, thebackup
+agent reconnectsthe containernetwork namespaceto the
+bridge, thus reestablishingthe network connection.
+V. O
+PTIMIZATIONS
+The basic implementationof
+NiLiCon
+presented in
+§
+IV
+imposesa prohibitive performance overhead. This overhead
+
+is due to the checkpointing time, which is often hundreds of
+
+milliseconds.While such latency is acceptable for container
+
+migration, it is not for replication, that requires repeated
+
+high-frequency checkpointing. This section presents opti-
+
+mizations in the implementation of
+NiLiCon
+that brought
+the overhead down to a level competitive with the overhead
+
+of similar VM replication schemes. In addition, it presents
+
+a key optimization that reduced the recovery latency.
+The CRIU developers have indicated that checkpointing is
+slow due to the prohibitive latencies to obtain in-kernel con-
+tainer stateusing existing kernel interfaces [7]. The causes
+
+are: (1)a large number of system calls are needed; (2) some
+
+of the kernel interfaces provide extra information that is not
+
+neededfor checkpointing,but is expensive to generate; and
+(3) someof the kernel interfaces provide information in a
+
+formatthatis expensive to generate and parse. In addition,
+the kernel lacks mechanisms for identifying modiﬁed in-
+
+kernel container state, requiring all the in-kernel container
+
+stateto be checkpointed at every epoch.
+An example of cause (1) above is that to obtain the state
+of memory-mapped ﬁles, the
+stat
+system call needsto be
+invoked for each one. Since memory-mapped ﬁles are used
+
+for dynamically-linked libraries, applications often have a
+
+large number of such ﬁles, resulting in high overhead. An
+
+example of cause (2) is related to obtaining the process
+memorystate, stored in the VMAs (Virtual Memory Areas)
+maintained by the kernel. CRIU reads this information from
+
+/proc/pid/smaps
+. H ow ev e r,
+smaps
+also provides a large num-
+berof page statistics, such as the number of clean/dirty pages
+
+in the VMA, that is not needed for container checkpointing.
+
+An example of cause (3) is that the
+proc
+and
+sys
+ﬁle systems
+providethe information as formatted text, instead of the
+
+binaryformatin which they exist in the kernel.
+An ideal solution for the problems above would be to
+develop new kernel interfaces optimized for fast container
+
+checkpointing.However, this would require substantial mod-
+iﬁcationto the underlying kernel. Instead, this section shows
+
+Table I
+I
+MPACT OF
+NiLiCon
+’
+SPERFORMANCEOPTIMIZATIONS
+.
+Optimization
+Overhead
+Basicimplementation
+1940%
++ Optimize CRIU
+619%
++ Cache infrequently-modiﬁed state
+84%
++ Optimize blocking network input
+65%
++ Obtain VMAs from
+netlink
+53%
++ Add memory staging buffer
+37%
++ Transfer dirty pages via shared memory
+31%
+that, with only minor changes to the kernel, it is possible to
+achieve for container replication performance overhead that
+
+is competitive with that of VM replication.
+Table I lists
+NiLiCon
+’s optimizations, described in the
+rest of this section, and their impact on the overhead
+for the
+streamcluster
+benchmark(
+§
+VI). Altogether, these
+optimizationsreduced the overhead from 1940% to 31%.
+In total,
+NiLiCon
+’s implementation consists of 7494 lines
+of code (LOC). 257 LOC are in the main part of the kernel,
+
+mostly fordealing with the ﬁle system cache (
+§
+III).1093
+LOC are in two kernel modules: changes to DRBD (
+§
+IV) and
+a module for tracking some in-kernel state changes (
+§
+V-B).
+In addition, we applied an 1140 LOC kernel patch from
+
+the CRIU developers [4] that speeds up obtaining VMA
+
+informationfrom the kernel (
+§
+V-D).
+A. Optimizing CRIU
+NiLiCon
+implements threeoptimizations to CRIU. The
+most important of these is a change in the way the pages
+
+from each incrementalcheckpointare stored in the backup.
+CRIU uses a linked list of directories in the ﬁle system,
+
+each containing ﬁles containing an incremental checkpoint.
+
+For each page received in an incremental checkpoint, CRIU
+
+iterates throughthis linked list to possibly ﬁnd and remove a
+previous copy of the page.
+NiLiCon
+’s optimization is to store
+the committed pages in a four-level radix tree, mimicking
+
+the implementationof the hardware page tables. The time
+
+to process each received page is thus short and independent
+
+of the number of previous checkpoints.
+With the original CRIU implementation, the primary agent
+issues virtualsignals to pause all the threads (
+§
+II-B),sleeps
+for 100ms, and thenchecks whetherallthe threadsare
+
+paused. The goalis to avoid busy waiting (CPU usage) but
+
+this increasescheckpointingtime.
+NiLiCon
+’s optimization is
+to eliminate the sleep and implement continuous polling of
+
+the thread state. Even with our most system call intensive
+benchmarks, theaverage busy looping time is less than 1ms,
+
+resulting in negligible additional CPU usage.
+The stock CRIU usesproxy processesat the primary
+and backup hoststhat serve as intermediaries in the state
+
+transferfrom theprimary agentto the backup agent. This
+
+adds extra copies to the state transfer and complicates the
+
+overall structure.
+NiLiCon
+’s third optimization of CRIU is
+theremoval of the proxy processes, allowing the primary
+agent to directly transfer state to the backup agent.
+B. Caching Infrequently-Modiﬁed In-Kernel Container State
+The most effective optimization in
+NiLiCon
+is based on
+the observation that part of the in-kernel container state
+
+is rarely modiﬁed and thus rarely changes between check-
+
+points. Hence, it is wasteful to retrieve all of this state for
+
+every checkpoint. We identiﬁed the following infrequently-
+
+modiﬁedin-kernelstate components:control groups, names-
+
+paces, mount points,device ﬁles, and memory mapped ﬁles.
+
+As an example, the time to obtain these state components
+
+while executing
+streamcluster
+is approximately 160ms.
+NiLiCon
+’s optimization is to avoid retrieving infrequently-
+modiﬁed in-kernel state componentsif they have not
+
+changed sincethelastcheckpoint.Instead, the values of
+
+these state componentsare cached and the cached values
+
+are includedin the checkpoint sent to the backup.
+Theoptimization describedabove requires the ability
+to detect when infrequently-modiﬁed state components are
+
+modiﬁed and retrieve their new values. We developed a
+
+kernel module that utilizes the
+ftrace
+debuggingfunctionality
+provided by the kernel to detect these state change and
+
+inform the checkpointingagent.
+Ftrace
+has negligible over-
+head and allows kernel modules to add a “hook function”
+
+to any target kernel function such that, whenever the target
+
+functionis called, the hook function is invoked.
+NiLiCon
+uses
+ftrace
+to add hooks to target kernel func-
+tions that potentially modify the infrequently-modiﬁedstate
+
+componentslisted above. Each hook function invokes the
+
+actual target function andthen performs additionalchecks
+
+based on the argument and the return value of the target
+
+functionas well as the identity of the calling thread. These
+
+checks determinewhether there mayhave been a change in
+
+the infrequently-modiﬁedstate of a thread in the container.
+
+If the check result is positive, a signal is sent to the primary
+
+agent. The hook functionthen returnswith the return value
+
+of the target function. In our research prototype, we did not
+
+attemptto ﬁnd and instrument
+all possible
+code paths that
+change the infrequently-modiﬁed state components. Instead,
+
+our implementationonly covers the most common paths and
+
+that was sufﬁcient for all of our benchmarks.
+C. Optimizing Blocking Network Input
+As explained earlier (
+§
+III), networkinput must be blocked
+and then unblocked during every epoch. CRIU does this
+
+using the ﬁrewall. However, setting up and removing ﬁrewall
+
+rules adds a 7ms delay during each epoch. Furthermore, if
+
+the dropped packets are part of a TCP connection establish-
+
+ment, this can introducedelays of up to three seconds.
+NiLiCon
+’s optimization is to use for network input the
+same mechanism usedto buffer and release network output
+
+(
+§
+IV). Inputnetwork packets arriving duringcheckpointing
+are buffered by a kernel module instead of being dropped.
+
+These packets are released to the container once the check-
+point completes. Thisimplementationavoids long delays
+for TCP connectionestablishmentandintroduces a delay
+
+of only 43
+µ
+s during checkpointing.
+D. Optimizing Memory Checkpointing
+Three optimizationsthatreduce the overhead of check-
+pointing memoryaddress three correspondingdeﬁciencies
+
+of the basic implementation: (1) VMA information of the
+
+processes is obtained using
+/proc/pid/smaps
+, which is slow;
+(2) containersdo not resume execution until all dirty mem-
+
+ory pages have been transferred to the backup; and (3) the
+
+content of the dirty pages are transferred by the parasite code
+
+via a pipe, involving multiple system calls.
+The developers of CRIU are aware of deﬁciency (1)
+and have proposed a kernel patch [7] that uses the
+netlink
+functionality to transfer the memory mapping information.
+NiLiCon
+utilizes this patch to resolve deﬁciency (1).
+NiLiCon
+resolves deﬁciency (2) using a staging buffer.
+During checkpointingdirtypages areﬁrst copiedto a local
+
+staging buffer and later transferred to the backup after the
+
+containerhas resumedexecution (as with Remus (
+§
+II-A)).
+Deﬁciency (3) is resolved by using shared memory to
+transferthe dirtypages. Speciﬁcally,
+NiLiCon
+createsa
+shared memoryregion between the parasite code and the
+
+primaryagent to allow for the parasite code to directly
+
+transferdirty pages to the primary agent.
+E. Reducing Recovery Latency
+After recovery, the backup container needs to retransmit
+the unacknowledgedpackets to the client. At that time, TCP
+sockets in the backup are new and for new TCP sockets
+
+the default retransmissiontimeout is long — at least one
+second. This leads to an unnecessarily long recovery latency.
+
+NiLiCon
+resolves this problem with a small modiﬁcation
+to the kernel TCP stack (two LOC). Speciﬁcally, if the
+
+socket is in the special repair mode (
+§
+II-B),
+NiLiCon
+sets the
+retransmissiontimeoutto be the minimum value: 200ms.
+VI. E
+XPERIMENTAL
+S
+ETUP
+This section presentsthe experimental setup used to eval-
+uate
+NiLiCon
+, including the description of the experimental
+platformand the benchmarks.
+For logistical reasons, two pairs of hosts were used in the
+evaluation. The ﬁrst pair was used to measure the recovery
+
+rate and the recovery latency. Each of these hosts had
+
+8GB of memory and dual quad-core Intel Xeon-E5520 CPU
+
+chips. The second pair was used to measure the performance
+
+overhead during normal operation. Each of these hosts was
+more modern,with at least 32GB memory and dual 18-core
+
+Intel Xeon CPUchips (onewith E5-2695v4chips and the
+other with XeonGold 6140 chips). Each pairof hosts were
+
+connectedto each other via a dedicated 10Gb Ethernet link
+
+and connectedto the client host via 1Gb Ethernet.
+We used Fedora 29 Linux with kernel version 4.18.16.
+Containers were hosted by runC version 1.0.1 [9], a con-
+
+tainer runtime used in Docker to host and manage containers.
+
+The
+NiLiCon
+implementationwas based on CRIU version
+3.11. ExperimentswithVMs, werehostedby KVM with
+
+QEMU version 2.3.50, the latest version that supports micro-
+
+checkpointing(MC),KVM’s implementation of Remus [5].
+VMs were fullyvirtualwithparavirtualdrivers. Each VM or
+
+containerwas hosted on a dedicate core and allocated 4GB
+
+physicalmemory.
+The evaluation was based on ﬁve server benchmarks:
+Redis
+[11],
+SSDB
+[15],
+Node
+[10],
+Lighttpd
+[1],and
+DJCMS
+[2]; as well as two non-interactive CPU/memory-
+intensive PARSEC [20] benchmarks:
+streamcluster
+and
+swaptions
+. Unless otherwise mentioned below, all bench-
+marks were conﬁguredwiththe default characteristics.
+Redis
+and
+SSDB
+are NoSQL databases.
+Redis
+was con-
+ﬁgured to stress memory by storing all data in memory
+
+(persistence:None).
+SSDB
+was conﬁgured to stress disk
+I/O by using full persistence. As in [37], each request to
+Redis
+/
+SSDB
+was a batch of 1K requests consisting of 50%
+reads and 50% writes. YCSB [22]generated 2M requests
+
+with 100K1KB records. A custom client with the
+hiredis
+library[8] batched and senttheserequeststo
+Redis
+/
+SSDB
+.
+DJCMS
+,
+Lighttpd
+, and
+Node
+are web-based servers. The
+SIEGE [13]client was used to send to each of them con-
+
+currentrequests.
+DJCMS
+is a content management system
+platform thatuses Nginx, Python,and MySQL. It was
+
+evaluated with requests on the administrator dashboard page.
+The
+Lighttpd
+web server was evaluated with requests to
+a PHP script that watermarks an image.
+Node
+,writtenin
+Node.js, searches througha database for a keyword and
+generates a response consisting of text and ﬁgures. While
+the original
+Node
+benchmark sends a response as a Facebook
+chat message,we modiﬁed it to reply with a static web page.
+VII. E
+VALUATION
+This section presentsthevalidation (
+§
+VII-A), recovery
+latency (
+§
+VII-B), andthe performanceoverhead (
+§
+VII-C)
+of
+NiLiCon
+.
+A. Validation
+Fault injection is used to test
+NiLiCon
+’s ability to recover
+from containerfailures. Two microbenchmarks are used in
+
+additionto the benchmarks described in
+§
+VI. The ﬁrstmi-
+crobenchmark stressesthe handling of the disk, ﬁle system
+
+cache,and heap memory. It performs a mix of writes and
+read of random size (1-8192 bytes) to random locations in
+a ﬁle. An error is ﬂagged if the data returned by a read
+
+differs from thedatawritten to that location earlier. The
+
+secondmicrobenchmarkstresses thehandling of the kernel’s
+
+network stack as well as a server application’s stack in
+
+memory. A client sends a message of random size (1B-2MB)
+to the server, the server saves it on its stack and then sends
+
+Table II
+R
+ECOVERYLATENCYBREAKDOWN
+.
+Restore
+ARP
+TCP
+Others
+Total
+Net
+218ms (71%)
+28ms(9%)
+54ms(18%)
+7ms (2%)
+307ms
+Redis
+314ms (84%)
+28ms(8%)
+23ms(6%)
+7ms (2%)
+372ms
+it back to the client. The client ﬂags an error if the message
+it receives is different or if the TCP connection is broken.
+All the benchmarksareconﬁgured to run for at least
+60 seconds. A fault is injected at a random time during
+
+the middle80% of the benchmark’s execution time, thus
+
+triggeringrecovery on the backup host. A fail-stop fault is
+
+emulated,using the
+sch
+plug
+module, by blocking incoming
+and outgoing trafﬁc on all the primary container’s network
+interfaces. For the microbenchmarks, recovery is considered
+
+successful if no errors are ﬂagged. For
+Redis
+and
+SSDB
+,
+the client programrecordsthe value it stores with each
+
+key, compares that value with the value returned by the
+
+corresponding
+ge t
+operation, ﬂaggingan error if there is a
+mismatch.Recovery is considered successful if no errors are
+
+ﬂagged. For all the other benchmarks, the container output
+
+is validated by comparison with a golden copy.
+Each benchmarkis executed 50 times. We ﬁnd that in all
+the executions
+NiLiCon
+is able to detect and recover from
+the container failure with no broken network connections!
+
+We also manually unplug the network cable a few times for
+each benchmark, andverify that
+NiLiCon
+is able to recover
+from these failures as well.
+B. Recovery Latency
+We measure the service interruption duration due to a fault
+using server applications. This duration is the sum of the
+
+detection and recovery latencies, which increase the response
+
+time at the client. With the detection mechanism used by
+
+NiLiCon
+(
+§
+IV), the detectionlatency is, on average, 90ms.
+Hence, the recovery latency is obtained by subtracting 90ms
+
+from the average increase in response time.
+Two benchmarks are used:
+Net
+and
+Redis
+.
+Net
+is a
+microbenchmark,wherethe clientsends 10 bytes to the
+
+server and the server responds with the same 10 bytes.
+
+Fo r
+Redis
+, a client uploads (sets) approximately 100MB of
+data to the server. Next, one client keeps sending batched
+
+requests to stress the server, resulting in approximately 30%
+
+CPU usage. Each memberof another set of four clients
+
+continuouslysends a single get or set request at a time.
+
+The serviceinterruption latency measurements are based on
+the responses to these latter requests.
+Each experiment is executed ten times and the variations
+in the measured service interruption latencies are within 10%
+
+of the mean. Table II shows the key components of the
+recovery latency.
+Restore
+is the time to restore the container
+state.
+ARP
+is the time to broadcast a gratuitous ARP reply
+to advertise the new MAC address.
+TCP
+is the portion of the
+ì9
+íì9
+îì9
+ïì9
+ðì9
+ñì9
+òì9
+óì9
+ôì9
+íîXñð9
+íõXðô9
+ïîXðð9
+îñXõò9
+òóXïî
+9
+ïïXóí9
+óíXôñ9
+ïíXôï9
+ïôXõó
+9
+ñôXïî9
+ïìXíô9
+ïóXòó9
+ñîXòò
+9
+ñðXòó9
+ı
+}À˚„Z˚ˆ
+}››˚ˆ
+
+}À˚„Z˚ˆ
+Á›ı]}v’˚uoµ’ı˚„
+˚ˆ]’ }ˆ˚ıı›ˆ
+Figure3. Performance overhead comparison between MC and
+NiLiCon
+with breakdown of sources of overhead.
+delayfor packet retransmission (
+§
+V-E) that is not overlapped
+withother recovery actions. The recovery latency difference
+
+between
+Net
+and
+Redis
+is due to the additional time to restore
+the 100MB memorystate of
+Redis
+.
+C. Performance Overhead During Normal Operation
+This subsectionpresentstheperformanceoverhead of
+NiLiCon
+duringnormaloperation as well as additional mea-
+surementsto help explain the high-level results. The results
+
+include comparisonswith MC, the Remusimplementation
+
+on KVM [5]. MC only supports disk-IO over a networked
+
+ﬁle systems. Thus,dueto network buffering, MC has a
+
+signiﬁcantextra delay for each ﬁle access, giving
+NiLiCon
+an unfair performance advantage in many comparisons. We
+have veriﬁed that the disk state replication we use (
+§
+IV) has
+no performance impact with our benchmarks. Hence, with
+
+MC, we use a local disk, without disk state replication, even
+
+though this doesnotprovide correct handling of disk state.
+Unless otherwisespeciﬁed,the non-interactive bench-
+marksuse the
+native
+input set [20] andare set to utilize
+fourworker threads. For the server benchmarks, clients are
+
+conﬁgured to “saturate” the server to reach its maximum
+
+request processingrate.
+Overhead with Maximum CPU Utilization.
+With non-
+interactive applications, such as
+streamcluster
+and
+swap-
+tions
+, the performance overhead is the relative increase in
+execution time. For server applications, the performance
+
+overhead is the relative reduction in maximum throughput.
+Figure 3 presents the performance overhead of
+NiLiCon
+,
+withacomparisonagainstMC.Eachofthebenchmarks
+
+is executed for 100 times. The results have a coefﬁcient of
+
+variation of less than 2%. The overheads of
+NiLiCon
+and MC
+are comparable andaredue to two sources: the stop time
+of the container/VM for checkpointing and the overhead
+
+duringnormal operation for trackingthepagesthat are
+modiﬁed during each epoch.For MC, most of the overhead
+
+is the runtime overhead while for
+NiLiCon
+, except
+Redis
+and
+DJCMS
+, most of the overhead is the stop overhead.
+
+Table III
+A
+VERAGESTOPTIME
+&#
+DIRTYPAGESPEREPOCH
+,MC
+AND
+NiLiCon
+.
+SwapT
+StreamC
+Redis
+SSDB
+Node
+Lhttpd
+DJCMS
+Stop
+MC
+2.4ms
+3.0ms
+9.3ms
+3.0ms
+9.4ms
+4.8ms
+4.5ms
+NiLiCon
+5.1ms
+7.4ms
+18.9ms
+10.4ms
+38.2ms
+25.0ms
+19.1ms
+DPage
+MC
+212
+462
+6.2K
+1107
+6.4K
+2.9K
+2.8K
+NiLiCon
+46
+303
+6.3K
+590
+5.4K
+1.6K
+3.0K
+Table IV
+S
+TOPTIMEANDTRANSFERREDSTATESIZEFOR
+NiLiCon
+.
+SwapT
+StreamC
+Redis
+SSDB
+Node
+Lhttpd
+DJCMS
+Stop
+10%
+5.1ms
+6.3ms
+15ms
+9ms
+38ms
+20ms
+16ms
+50%
+5.1ms
+6.4ms
+18ms
+10ms
+41ms
+25ms
+18ms
+90%
+5.2ms
+13.1ms
+20ms
+11ms
+46ms
+35ms
+21ms
+State
+10%
+189K
+257K
+17.9M
+1.43M
+22.7M
+2.05M
+53.1K
+50%
+193K
+269K
+24.2M
+2.88M
+24.2M
+7.17M
+9.5M
+90%
+201K
+306K
+30.0M
+3.41M
+25.2M
+14.65M
+13.3M
+NiLiCon
+’s runtime overhead component is lower than
+MC’s for all the benchmarks. This is mainly due to the high
+
+overhead of VM exit and entry operations needed in MC for
+tracking modiﬁedpages.
+Table III presents the average stop time and number of
+dirty pages per epoch. For
+NiLiCon
+, the stop time is higher
+since
+NiLiCon
+needs to obtain container in-kernel state using
+the slow kernel interface (
+§
+V). This is the main reason for
+NiLiCon
+’s higher overhead for most of the benchmarks. For
+example, the
+Node
+benchmark has the highest stoptime
+since 128 clients are required to reach saturation. The result
+
+is that the container has a large number of sockets and
+
+NiLiCon
+spends around 13ms collecting the socket states.
+Stop Time and Transferred State Variations.
+Thestop
+time and size of the state transferred per epoch vary among
+
+the epochs of an application as well as from one application
+
+to another. Table IV shows these variations, providing the
+
+10, 50, and 90 percentile values of these metrics. The results
+
+indicate that theimpact of
+NiLiCon
+on an application’s
+performance canvary signiﬁcantly over time (e.g., due to
+
+stop time for
+streamcluster
+, state size for
+DJCMS
+).
+The main componentsof the transferred state are the dirty
+pages and the read/writequeuesof TCP sockets. For our
+benchmarks,the dirtypages portion is in the range of 85%
+
+to over 95%.
+Backup CPU Utilization.
+A beneﬁt of schemes like
+Remus and
+NiLiCon
+over active replication (
+§
+VIII) is lower
+utilizationof the CPU on the backup host. Table V shows
+
+an approximation of the CPU utilization on the backup host
+
+with
+NiLiCon
+. These measurements are done by pinning
+all of
+NiLiCon
+activities on the backup to a single core
+andrunningitwithhighpriority(
+niceness
+−
+20). A simple
+programthat continuouslyincrements a counter is pinned
+
+to the same core, running with low priority (
+niceness
+19).
+The core utilization is derived by comparing the rate at
+Table V
+C
+OREUTILIZATIONONACTIVEANDBACKUPHOSTS
+.
+SwapT
+StreamC
+Redis
+SSDB
+Node
+Lighttpd
+DJCMS
+Active
+3.96
+3.91
+0.98
+1.70
+1.01
+3.95
+1.41
+Backup
+0.07
+0.08
+0.28
+0.12
+0.40
+0.18
+0.26
+Table VI
+R
+ESPONSELATENCYWITHASINGLECLIENT
+.
+Redis
+SSDB
+Node
+Lighttpd
+DJCMS
+Stock
+3.1ms
+93ms
+2.4ms
+285ms
+89ms
+NiLiCon
+36.9ms
+143ms
+39.4ms
+542ms
+245ms
+which the counter increments on the backup to the rate at
+which it increments on an otherwise idle dedicated core.
+
+For comparison, similar core utilization measurements were
+
+doneon a host executing the benchmarks
+without
+replication.
+As shown in Table V, with
+NiLiCon
+the core utilization
+on the backup host is indeed signiﬁcantly lower than on an
+
+active host. On an active host, the utilization is evenly di-
+vided among thecontainer’s four cores. Most of the backup
+CPU cycles are spent reading the state transferred from the
+
+primary. This processing increases when the granularity at
+
+which this state arrives is ﬁner, since more read system
+
+calls must be invoked. For example, a signiﬁcant portion
+
+of
+Node
+’s transferred state is the state TCP sockets, which
+arrives at the backup in small chunks. Thus,
+Node
+’s backup
+CPUutilization is higher than
+Redis
+’s even though they have
+similar sizes of transferred state.
+RequestResponse Latency.
+For server applications, one
+of the impacts of schemes like Remus and
+NiLiCon
+is
+to increase the latency of responding to requests. There
+
+are two causes for this increase: (1) more time is spent
+
+processingeach requestdueto checkpointing and runtime
+
+overhead; and (2) the response outgoing packets are delayed
+
+due to buffering (
+§
+II-A). Table VI compares the response
+timeswith
+NiLiCon
+and with the stockserver application
+(no replication).In all cases there is only one client. For
+
+benchmarkswith short processing time, suchas
+Node
+and
+Redis
+, overhead (2) dominates. For the other benchmarks,
+overhead (1) dominates.
+Scalability.
+We present the scalability of
+NiLiCon
+with
+respect to the number of threads or processes in the container
+
+as well as the number of clients sending requests to a server
+
+application executing in the container.
+To evaluate the impact of varying the number of threads,
+streamcluser
+is executed with 1 to 32 threads, with another
+core allocatedto the container for each additional thread.
+
+NiLiCon
+’s performance overhead increases from 23% to
+52%, respectively. This is caused by: (1) the average time
+
+to retrieve the per-thread states (e.g., registers, signal mask,
+schedulingpolicies)increases from148
+µ
+s to 4ms; (2) the
+process’ memoryfootprintincrease from49K to 111K
+
+pages,increasingthetime to identify dirty pages from
+
+1441
+µ
+s to 2887
+µ
+s; and (3) due to the increased number of
+cores, more processingis performed per epoch, causing the
+number of dirty pages to increase from 121 to 495, resulting
+
+in increased runtime overhead for tracking dirty pages and
+increasedmemory copying time, from 263
+µ
+s to 1099
+µ
+s.
+Lighttpd
+is used to evaluate the impact of: (1) varying the
+number of clients, and (2) varying the number of processes
+
+in the container. For (1), the number of
+Lighttpd
+processes
+is ﬁxed at 4 and the number of clients is varied from 2 to
+
+128. With 32 or fewer clients, the overhead is approximately
+
+34%. This overhead increases to 45% with 128 clients. This
+
+overhead increase is almost entirely caused by the increased
+
+time to checkpoint socket states: from 1.2ms with 2 clients
+
+to 13ms with 128 clients.
+The numberof
+Lighttpd
+processes is varied from 1 to
+8, with another core allocated to the container for each
+
+additionalprocess. The overhead increases from 23% to
+
+63%, respectively. This is caused by: (1) the average time
+
+to retrieve the per-process states increased from 6.5ms to
+
+28.7ms; (2)with morecores, moreclients areneeded (from
+
+2to8)tosaturatetheserver,requiringmoresockets,
+
+increasingthe timeto retrieve socket states from 1.2ms to
+
+3.8ms; (3) with morecores, moreprocessingis performed
+
+per epoch, causingthenumberof dirty pages to increase
+
+from 391 to 2062, resulting in increased runtime overhead
+
+for trackingdirty pages andincreased memory copying time,
+
+from 519
+µ
+s to 3.5ms.
+VIII. R
+ELATED
+W
+ORK
+NiLiCon
+is closely related to works on VM replication
+and process checkpointing/migration.The rest of the section
+discusses works in these two areas.
+VM replication
+. Bressoud and Schneider introduced ac-
+tive VM replication [21]. A primary VM and backup VM
+
+execute on different hosts in lock-step at epoch granularity.
+
+The pair of hosts must follow a deterministic execution
+
+path, requiringoverhead for coordination that would grow
+
+to prohibitive levels for multiprocessor systems [23].
+Remus [23] introducedpassive VM replication based on
+high frequency incremental checkpointing to a warm backup
+
+(
+§
+II-A).Many of the follow-on works focused on reducing
+the performanceoverhead. For example, Phantasy [34] re-
+
+duces the overhead during normal execution and latency of
+
+state transferusing thehardwarefeaturesof, respectively,
+
+Intel’s page-modiﬁcation logging (PML) and RDMA.
+COLO [24]reduces theperformanceoverhead by deploy-
+ing active replication. Inputs to the primary VM are also
+
+transferredto the backup VM. Outputs from the primary
+
+and the backup are compared.If there is a match, one copy
+
+of the outputs is released immediately. If the outputs differ,
+
+state synchronizationis performed. Compared to Remus,
+
+with some workloads COLO requires less data (state) to be
+
+transferredbetween the primaryand backup. Furthermore,
+
+when the primaryand backup outputsmatch, the onlydelay
+of outgoing packets is for the comparison, far less than the
+buffering delay with Remus and
+NiLiCon
+. A key downside
+of COLO is that, for largely non-deterministic workloads,
+
+mismatchesarefrequent,resulting in prohibitive overhead.
+PLOVER [37] uses active replication coupled with the
+Remus [23] mechanism. Speciﬁcally, as with Remus, exe-
+cution is partitioned into epochs and outgoing packets are
+
+buffered and released only after the backup is conﬁrmed
+
+to have the corresponding state. The purpose of the active
+replica is to reduce the difference between the states of
+
+the primaryand backup states and thusreduce the state
+
+thatneeds to be transferred per epoch. As with all active
+replicationschemes, theresource overheads (CPU cycles and
+memory) of COLO [24] and PLOVER is more than 100%.
+Tardigrade [29] also uses the Remus [23] mechanism,
+but operates with
+lightweight
+VMs (LVMs). The use of
+LVMs signiﬁcantly reduces the amount of state transferred
+between the primaryandbackup for each epoch, thus allow-
+ing higherfrequency checkpointing and resulting a shorter
+
+delays for outgoingpackets.An LVM typically runs only the
+
+applicationand a library OS (LibOS), which translates and
+
+forwardssystem callsto the host OS. An LVM is similar
+
+to a container in that it also does not include a privileged
+
+software component,has a separate namespace, and only
+
+containsthe target application. Compared to a container, an
+
+LVM has looser coupling with the host OS kernel since:
+
+(1) the LibOSmaintainsin the LVM state that for a container
+
+is maintained in the kernel, and (2) the interface (ABI)
+
+betweentheLibOS andthehostkernel is narrower.
+A disadvantage of Tardigrade is that it requires deploying
+a LibOS, not currently a common part of the software stack,
+
+potentiallyresulting in compatibility problems. A severe
+
+limitation of Tardigrade is that it breaks all the established
+
+TCP connectionsupon failover since the ABI does not
+providea way to access the TCP stack in the host OS.
+
+NiLiCon
+doesnothave these disadvantages.
+Process checkpoint/migration.
+There area wide variety
+of works on process checkpointing/migration [17], [18],
+
+[25], [31], [33]. However, with process replication it is
+
+difﬁcult to avoid potential resource naming conﬂicts upon
+
+failover as well as to identify and isolate all the necessary
+
+statecomponents thatneedto be replicated. Zap [32],
+
+addresses the limitationsof process migration by allocating
+
+separate namespacesfor groupsof processes. This approach,
+
+in its essence, is the same as the namespace implementation
+
+for Linux containers.
+IX. C
+ONCLUSION
+The abilityto provide application-transparent fault tol-
+erancecanbe highly beneﬁcial in data centers and cloud
+
+computing environments in order to provide high reliability
+
+forlegacyapplicationsaswellastoavoidburdeningap-
+
+plication developers with the need to develop customized
+fault tolerance solutions for their particular applications.
+
+VM replication was developed and has been continuously
+enhanced in order to provide such application-transparent
+fault tolerance. This has led to not only many publications
+
+but also several commercial products. Due to their lower
+resourcerequirementsand reduced managementcosts, in
+
+many situations there are compelling reasons to deploy
+
+containersinsteadof VMs to provide an isolation and
+
+multitenancy layer. Hence, there is strong motivation to
+explore the possibility of using container replication to
+
+provide transparent fault tolerance.
+We have presented
+NiLiCon
+, which, to the best of our
+knowledge, is the ﬁrst working prototype of container
+
+replication thatprovides fault tolerance in a way that is
+
+transparentto both the protected applications and external
+
+clients.
+NiLiCon
+does this by providing seamless failover
+from a failed container to a backup container on a different
+
+host.
+NiLiCon
+usesthe basic mechanism developed for VM
+replication. However, in its implementation it overcomes
+
+unique challengesdueto the tight coupling between con-
+
+tainers andtheunderlyingkernel.
+NiLiCon
+’s implementation
+is based on CRIU, an open source container checkpointing
+
+and migration tool.However, the overhead of the available
+CRIU is too high for use in replication.
+NiLiCon
+implements
+critical optimizationsthat reducethisoverhead, resulting in
+
+a tool with performance overhead that is competitive with
+
+the overhead of VM replication schemes.
+R
+EFERENCES
+[1] “Addingwatermarks to images using alpha channels,” https://www.
+php.net/manual/en/image.examples-watermark.php, accessed: 2019-
+
+10-02.
+[2] “Animproved django-admin-tools dashboard for Django projects,”
+https://github.com/django-ﬂuent/django-ﬂuent-dashboard,accessed:
+2019-10-02.
+[3] “CRIU:Checkpoint/RestoreIn Userspace,” https://criu.org/Main
+Page, accessed: 2019-09-25.
+[4] “CRIUTask-diag,” https://criu.org/Task- diag, accessed: 2019-10-02.
+
+[5] “Features/MicroCheckpointing,” https://wiki.qemu.org/Features/
+MicroCheckpointing,accessed:2019-10-02.
+[6] “InstallXen4.2.1withRemusandDRBDon Ubuntu 12.10,”
+https://wiki.xenproject.org/wiki/Install
+Xen
+4.2.1
+with
+Remus
+and
+DRBD
+on
+Ubuntu
+12.10,accessed:2019-10-02.
+[7] “Linux-task-diag,” https://github.com/avagin/linux- task- diag,
+accessed:2019-10-02.
+[8] “MinimalisticC client for Redis,” https://github.com/redis/hiredis,
+accessed:2019-10-02.
+[9] “opencontainers/runc,” https://github.com/opencontainers/runc, ac-
+cessed:2019-10-02.
+[10]“Pokedex Messenger Bot for Pokemon GO,” https://github.com/
+zwacky/pokedex- go, accessed: 2019-10-02.
+[11]“Redis,” https://redis.io, accessed: 2019-10-02.
+
+[12]“Remus- Xen,” https://wiki.xenproject.org/wiki/Remus, accessed:
+2019-10-02.
+[13]“Siege Home,” https://wiki.qemu.org/Features/MicroCheckpointin://
+www.joedog.org/siege-home/,accessed:2019-10-02.
+[14]“SOFT-DIRTY PTEs,” https://www.kernel.org/doc/Documentation/
+vm/soft-dirty.txt,accessed:2019-09-27.
+[15]“SSDB- A fast NoSQL database, an alternative to Redis,” https:
+//github.com/ideawu/ssdb,accessed:2019-10-02.
+[16]“TCPconnectionrepair,” https://lwn.net/Articles/495304/, accessed:
+2019-09-27.
+[17] J. Ansel, K. Arya, and G. Cooperman, “DMTCP: Transparent Check-
+pointingforClusterComputationsand the Desktop,” in
+2009IEEE
+InternationalSymposiumon Parallel and Distributed Processing
+,
+Rome,Italy, May 2009.
+[18] A. Barak and R. Wheeler, “MOSIX: An Integrated Multiprocessor
+UNIX,” in
+USENIXWinter 1989 Technical Conference
+, San Diego,
+CA,USA,Feb. 1989.
+[19] D. Bernstein, “Containers and Cloud: From LXC to Docker to
+Kubernetes,”
+IEEECloudComputing
+, vol. 1, no. 3, pp. 81–84, Sep.
+2014.
+[20] C. Bienia, “Benchmarking Modern Multiprocessors,” Ph.D. disserta-
+tion,PrincetonUniversity, January 2011.
+[21] T. C. Bressoud and F. B. Schneider, “Hypervisor-based Fault Tol-
+erance,” in
+15thACM Symposium on Operating Systems Principles
+,
+CopperMountain,Colorado,USA,Dec.1995.
+[22] B. F. Cooper, A. Silberstein, E. Tam, R. Ramakrishnan, and R. Sears,
+“BenchmarkingCloudServingSystemswithYCSB,” in
+1st ACM
+Symposiumon Cloud Computing
+, Jun. 2010, pp. 143–154.
+[23] B. Cully, G. Lefebvre, D. Meyer, M. Feeley, N. Hutchinson, and
+A. Warﬁeld, “Remus: High Availability via Asynchronous Virtual
+MachineReplication,” in
+5th USENIXSymposiumon Networked
+SystemsDesignandImplementation
+, Apr. 2008, pp. 161–174.
+[24] Y. Dong, W. Ye, Y. Jiang, I. Pratt, S. Ma, J. Li, and H. Guan,
+“COLO:COarse-grainedLOck-steppingVirtual Machines for Non-
+stop Service,” in
+4thACM Annual Symposium on Cloud Computing
+,
+SantaClara,CA,Oct.2013.
+[25] F. Douglis and J. Ousterhout, “Transparent Process Migration: Design
+Alternatives and the Sprite Implementation,”
+Software – Practice and
+Experience
+, vol. 21, no. 8, pp. 757–785, Aug. 1991.
+[26] W. Li and A. Kanso, “Comparing Containers versus Virtual Machines
+for AchievingHighAvailability,” in
+IEEEInternationalConference
+on Cloud Engineering
+, Tempe, AZ, Mar. 2015, pp. 353–358.
+[27] W. Li, A. Kanso, and A. Gherbi, “Leveraging Linux Containers to
+Achieve High Availability for Cloud Services,” in
+IEEEInternational
+Conferenceon Cloud Engineering
+, Mar. 2015, pp. 76–83.
+[28] Y. Liu, “High Availability of Network Service on Docker Container,”
+in
+5thInternationalConferenceon Measurement, Instrumentation
+andAutomation
+, Nov. 2016.
+[29] J. R. Lorch, A. Baumann, L. Vlendenning, D. Meyer, and A. Warﬁeld,
+“Tardigrade: Leveraging Lightweight Virtual Machines to Easily and
+Efﬁciently Construct Fault-Tolerant Services,” in
+12th USENIXSym-
+posiumon Networked Systems Design and Implementation
+, Oakland,
+CA,May 2015.
+[30] D. Merkel, “Docker: Lightweight Linux Containers for Consistent
+Development and Deployment,”
+LinuxJournal
+, vol. 2014, no. 239,
+Mar. 2014.
+[31] D. S. Milojicic, F. Douglis, Y. Paindaveine, and R. W. S. Zhou,
+“ProcessMigration,”
+ACM Computing Surveys
+, vol. 32, no. 3, pp.
+241–299,Sep.2000.
+[32] S. Osman, D. Subhraveti, G. Su, and J. Nieh, “The Design and
+Implementationof Zap: A System for Migrating Computing Envi-
+ronments,” in
+5thOperatingSystemsDesignand Implementation
+,
+Boston,MA, USA,Dec.2002.
+[33] R. F. Rashid and G. G. Robertson, “Accent: A Communication
+OrientedNetworkOperatingSystemKernel,” in
+8th ACM Symposium
+on Operating Systems Principles
+, Dec. 1981, pp. 64–75.
+[34] S. Ren, Y. Zhang, L. Pan, and Z. Xiao, “Phantasy: Low-Latency
+Virtualization-based Fault Tolerance via Asynchronous Prefetching,”
+IEEE Transactions on Computers
+, vol. 68, no. 2, pp. 225–238, Feb.
+2019.
+[35] M. Rosenblum and T. Garﬁnkel, “Virtual Machine Monitors: Current
+Technology and Future Trends,”
+IEEEComputer
+, vol. 38, no. 5, pp.
+39–47,May2005.
+[36] VMware,“Providing Fault Tolerance for Virtual Machines,”
+https://pubs.vmware.com/vsphere-4- esx- vcenter/topic/com.vmware.
+vsphere.availability.doc
+41/c
+ft.html,accessed:2017-12-01.
+[37] C. Wang, X. Chen, W. Jia, B. Li, H. Qiu, S. Zhao, and
+H. Cui, “PLOVER: Fast, Multi-core Scalable Virtual Machine Fault-
+tolerance,” in
+15thUSENIXSymposiumon Networked Systems De-
+signand Implementation
+, Renton, WA, Apr. 2018, pp. 483–499.
+
